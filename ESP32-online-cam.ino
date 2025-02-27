@@ -115,7 +115,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
             break;
 
         // Если запись включена, сохраняем кадр как отдельный файл на SD-карте
-        if (recordingActive)
+        if (recordingActive && res == ESP_OK)
         {
             char filePath[100];
             sprintf(filePath, "%s/%05d.jpg", folderName, frameIndex++);
@@ -133,22 +133,26 @@ static esp_err_t stream_handler(httpd_req_t *req)
         }
 
         // Формируем и отправляем заголовок для этого кадра
-        char part_buf[64];
-        size_t hlen = snprintf(part_buf, sizeof(part_buf), _STREAM_PART, jpg_buf_len);
-        res = httpd_resp_send_chunk(req, part_buf, hlen);
-        if (res != ESP_OK)
-            break;
-        res = httpd_resp_send_chunk(req, (const char *)jpg_buf, jpg_buf_len);
-        if (res != ESP_OK)
-            break;
-        res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
-        if (res != ESP_OK)
-            break;
+        if(res == ESP_OK){
+            res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
+        }
+        if(res == ESP_OK){
+            char part_buf[64];
+            size_t hlen = snprintf(part_buf, sizeof(part_buf), _STREAM_PART, jpg_buf_len);
+            res = httpd_resp_send_chunk(req, part_buf, hlen);
+        }
+        if(res == ESP_OK){
+            res = httpd_resp_send_chunk(req, (const char *)jpg_buf, jpg_buf_len);
+        }
 
         // Если кадр был сконвертирован – освобождаем память
         if (fb->format != PIXFORMAT_JPEG)
         {
             free(jpg_buf);
+        }
+        esp_camera_fb_return(fb);
+        if(res != ESP_OK){
+            break;
         }
     }
     return res;
