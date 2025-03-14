@@ -67,11 +67,11 @@ char folderName[64];
 
 // ===== Дескриптор HTTP сервера =====
 httpd_handle_t server_httpd = NULL;
-
+httpd_handle_t stream_httpd = NULL;
 // ===== Параметры NTP =====
 const char *ntpServer = "pool.ntp.org";
-const long gmtOffset_sec = 0; // для GMT+0
-const int daylightOffset_sec = 0;  // если нет перехода на летнее время
+const long gmtOffset_sec = 0;     // для GMT+0
+const int daylightOffset_sec = 0; // если нет перехода на летнее время
 
 // =======================================================================
 // Обработчик MJPEG-стрима (URI: /stream)
@@ -79,83 +79,87 @@ const int daylightOffset_sec = 0;  // если нет перехода на ле
 // =======================================================================
 static esp_err_t stream_handler(httpd_req_t *req)
 {
-    esp_err_t res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
-    if (res != ESP_OK)
-        return res;
-
-    while (true)
-    {
-        camera_fb_t *fb = esp_camera_fb_get();
-        if (!fb)
-        {
-            Serial.println("Camera capture failed");
-            res = ESP_FAIL;
-            break;
-        }
-        size_t jpg_buf_len = 0;
-        uint8_t *jpg_buf = NULL;
-        if (fb->format != PIXFORMAT_JPEG)
-        {
-            // Преобразуем кадр в JPEG
-            bool jpeg_converted = frame2jpg(fb, 80, &jpg_buf, &jpg_buf_len);
-            esp_camera_fb_return(fb);
-            if (!jpeg_converted)
-            {
-                Serial.println("JPEG compression failed");
-                res = ESP_FAIL;
-            }
-        }
-        else
-        {
-            jpg_buf_len = fb->len;
-            jpg_buf = fb->buf;
-        }
-
-        if (res != ESP_OK)
-            break;
-
-        // Если запись включена, сохраняем кадр как отдельный файл на SD-карте
-        if (recordingActive && res == ESP_OK)
-        {
-            char filePath[100];
-            sprintf(filePath, "%s/%05d.jpg", folderName, frameIndex++);
-            File file = SD_MMC.open(filePath, FILE_WRITE);
-            if (file)
-            {
-                file.write(jpg_buf, jpg_buf_len);
-                file.close();
-                Serial.printf("Saved frame to %s\n", filePath);
-            }
-            else
-            {
-                Serial.println("Failed to open file for writing");
-            }
-        }
-
-        // Формируем и отправляем заголовок для этого кадра
-        if(res == ESP_OK){
-            res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
-        }
-        if(res == ESP_OK){
-            char part_buf[64];
-            size_t hlen = snprintf(part_buf, sizeof(part_buf), _STREAM_PART, jpg_buf_len);
-            res = httpd_resp_send_chunk(req, part_buf, hlen);
-        }
-        if(res == ESP_OK){
-            res = httpd_resp_send_chunk(req, (const char *)jpg_buf, jpg_buf_len);
-        }
-
-        // Если кадр был сконвертирован – освобождаем память
-        if (fb->format != PIXFORMAT_JPEG)
-        {
-            free(jpg_buf);
-        }
-        esp_camera_fb_return(fb);
-        if(res != ESP_OK){
-            break;
-        }
-    }
+  esp_err_t res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
+  if (res != ESP_OK)
     return res;
+
+  while (true)
+  {
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb)
+    {
+      Serial.println("Camera capture failed");
+      res = ESP_FAIL;
+      break;
+    }
+    size_t jpg_buf_len = 0;
+    uint8_t *jpg_buf = NULL;
+    if (fb->format != PIXFORMAT_JPEG)
+    {
+      // Преобразуем кадр в JPEG
+      bool jpeg_converted = frame2jpg(fb, 80, &jpg_buf, &jpg_buf_len);
+      esp_camera_fb_return(fb);
+      if (!jpeg_converted)
+      {
+        Serial.println("JPEG compression failed");
+        res = ESP_FAIL;
+      }
+    }
+    else
+    {
+      jpg_buf_len = fb->len;
+      jpg_buf = fb->buf;
+    }
+
+    if (res != ESP_OK)
+      break;
+
+    // Если запись включена, сохраняем кадр как отдельный файл на SD-карте
+    if (recordingActive && res == ESP_OK)
+    {
+      char filePath[100];
+      sprintf(filePath, "%s/%05d.jpg", folderName, frameIndex++);
+      File file = SD_MMC.open(filePath, FILE_WRITE);
+      if (file)
+      {
+        file.write(jpg_buf, jpg_buf_len);
+        file.close();
+        Serial.printf("Saved frame to %s\n", filePath);
+      }
+      else
+      {
+        Serial.println("Failed to open file for writing");
+      }
+    }
+
+    // Формируем и отправляем заголовок для этого кадра
+    if (res == ESP_OK)
+    {
+      res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
+    }
+    if (res == ESP_OK)
+    {
+      char part_buf[64];
+      size_t hlen = snprintf(part_buf, sizeof(part_buf), _STREAM_PART, jpg_buf_len);
+      res = httpd_resp_send_chunk(req, part_buf, hlen);
+    }
+    if (res == ESP_OK)
+    {
+      res = httpd_resp_send_chunk(req, (const char *)jpg_buf, jpg_buf_len);
+    }
+
+    // Если кадр был сконвертирован – освобождаем память
+    if (fb->format != PIXFORMAT_JPEG)
+    {
+      free(jpg_buf);
+    }
+    esp_camera_fb_return(fb);
+    if (res != ESP_OK)
+    {
+      break;
+    }
+  }
+  return res;
 }
 
 // =======================================================================
@@ -164,17 +168,24 @@ static esp_err_t stream_handler(httpd_req_t *req)
 // =======================================================================
 static esp_err_t index_handler(httpd_req_t *req)
 {
-    const char *html = "<!DOCTYPE html><html>"
-                       "<head><meta charset='utf-8'><title>ESP32-CAM Control</title></head>"
-                       "<body>"
-                       "<h1>ESP32-CAM Stream</h1>"
-                       "<img src='/stream' style='width:640px;height:480px;'/><br><br>"
-                       "<button onclick=\"fetch('/startRecord')\">Start Recording</button>"
-                       "<button onclick=\"fetch('/stopRecord')\">Stop Recording</button>"
-                       "<button onclick=\"fetch('/relayOn')\">Relay On</button>"
-                       "</body></html>";
-    httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
-    return ESP_OK;
+  const char *html = "<!DOCTYPE html><html>"
+                     "<head><meta charset='utf-8'><title>ESP32-CAM Control</title></head>"
+                     "<body>"
+                     "<h1>ESP32-CAM Stream</h1>"
+                     "<img id=\"stream\" src='' style='width:640px;height:480px;'/><br><br>"
+                     "<button onclick=\"fetch('/startRecord')\">Start Recording</button>"
+                     "<button onclick=\"fetch('/stopRecord')\">Stop Recording</button>"
+                     "<button onclick=\"fetch('/relayOn')\">Relay On</button>"
+                     "<script>"
+                     "document.addEventListener('DOMContentLoaded', function (event) {"
+                     "var baseHost = document.location.origin;"
+                     "var streamUrl = baseHost + ':81';"
+                     "document.getElementById('stream').src = streamUrl + '/stream';"
+                     "});"
+                     "</script>"
+                     "</body></html>";
+  httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
 }
 
 // =======================================================================
@@ -182,36 +193,36 @@ static esp_err_t index_handler(httpd_req_t *req)
 // =======================================================================
 static esp_err_t start_record_handler(httpd_req_t *req)
 {
-    if (!recordingActive)
-    {
-        frameIndex = 0; // сбрасываем счётчик кадров
-        recordingActive = true;
-    }
+  if (!recordingActive)
+  {
+    frameIndex = 0; // сбрасываем счётчик кадров
+    recordingActive = true;
+  }
 
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo))
-    {
-        Serial.println("Не удалось получить время");
-    }
-    // Формируем имя папки на основе текущего времени
-    // Формат: /YYYY-MM-DD_HH-MM-SS
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo))
+  {
+    Serial.println("Не удалось получить время");
+  }
+  // Формируем имя папки на основе текущего времени
+  // Формат: /YYYY-MM-DD_HH-MM-SS
 
-    strftime(folderName, sizeof(folderName), "/%Y-%m-%d_%H-%M-%S", &timeinfo);
-    Serial.print("Создаётся папка: ");
-    Serial.println(folderName);
+  strftime(folderName, sizeof(folderName), "/%Y-%m-%d_%H-%M-%S", &timeinfo);
+  Serial.print("Создаётся папка: ");
+  Serial.println(folderName);
 
-    // Создаём папку на SD-карте
-    if (SD_MMC.mkdir(folderName))
-    {
-        Serial.println("Папка успешно создана");
-    }
-    else
-    {
-        Serial.println("Не удалось создать папку");
-    }
+  // Создаём папку на SD-карте
+  if (SD_MMC.mkdir(folderName))
+  {
+    Serial.println("Папка успешно создана");
+  }
+  else
+  {
+    Serial.println("Не удалось создать папку");
+  }
 
-    httpd_resp_send(req, "Recording started", HTTPD_RESP_USE_STRLEN);
-    return ESP_OK;
+  httpd_resp_send(req, "Recording started", HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
 }
 
 // =======================================================================
@@ -219,9 +230,9 @@ static esp_err_t start_record_handler(httpd_req_t *req)
 // =======================================================================
 static esp_err_t stop_record_handler(httpd_req_t *req)
 {
-    recordingActive = false;
-    httpd_resp_send(req, "Recording stopped", HTTPD_RESP_USE_STRLEN);
-    return ESP_OK;
+  recordingActive = false;
+  httpd_resp_send(req, "Recording stopped", HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
 }
 
 // =======================================================================
@@ -229,11 +240,11 @@ static esp_err_t stop_record_handler(httpd_req_t *req)
 // =======================================================================
 static esp_err_t relay_on_handler(httpd_req_t *req)
 {
-    digitalWrite(relayPin, HIGH);
-    relayActive = true;
-    relayStartTime = millis();
-    httpd_resp_send(req, "Relay activated for 3 seconds", HTTPD_RESP_USE_STRLEN);
-    return ESP_OK;
+  digitalWrite(relayPin, HIGH);
+  relayActive = true;
+  relayStartTime = millis();
+  httpd_resp_send(req, "Relay activated for 3 seconds", HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
 }
 
 // =======================================================================
@@ -241,50 +252,54 @@ static esp_err_t relay_on_handler(httpd_req_t *req)
 // =======================================================================
 void startServer()
 {
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.server_port = 80;
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = 80;
+  // Регистрируем обработчик главной страницы
+  httpd_uri_t index_uri = {
+      .uri = "/",
+      .method = HTTP_GET,
+      .handler = index_handler,
+      .user_ctx = NULL};
+  httpd_uri_t stream_uri = {
+      .uri = "/stream",
+      .method = HTTP_GET,
+      .handler = stream_handler,
+      .user_ctx = NULL};
+  httpd_uri_t start_record_uri = {
+      .uri = "/startRecord",
+      .method = HTTP_GET,
+      .handler = start_record_handler,
+      .user_ctx = NULL};
+  httpd_uri_t stop_record_uri = {
+      .uri = "/stopRecord",
+      .method = HTTP_GET,
+      .handler = stop_record_handler,
+      .user_ctx = NULL};
+  httpd_uri_t relay_uri = {
+      .uri = "/relayOn",
+      .method = HTTP_GET,
+      .handler = relay_on_handler,
+      .user_ctx = NULL};
 
-    // Запускаем сервер
-    if (httpd_start(&server_httpd, &config) == ESP_OK)
-    {
-        // Регистрируем обработчик главной страницы
-        httpd_uri_t index_uri = {
-            .uri = "/",
-            .method = HTTP_GET,
-            .handler = index_handler,
-            .user_ctx = NULL};
-        httpd_register_uri_handler(server_httpd, &index_uri);
+  // Запускаем сервер
+  if (httpd_start(&server_httpd, &config) == ESP_OK)
+  {
+    httpd_register_uri_handler(server_httpd, &index_uri);
 
-        // Регистрируем обработчик стрима
-        httpd_uri_t stream_uri = {
-            .uri = "/stream",
-            .method = HTTP_GET,
-            .handler = stream_handler,
-            .user_ctx = NULL};
-        httpd_register_uri_handler(server_httpd, &stream_uri);
+    // Регистрируем обработчики записи и реле
+    httpd_register_uri_handler(server_httpd, &start_record_uri);
+    httpd_register_uri_handler(server_httpd, &stop_record_uri);
+    httpd_register_uri_handler(server_httpd, &relay_uri);
+  }
 
-        // Регистрируем обработчики записи и реле
-        httpd_uri_t start_record_uri = {
-            .uri = "/startRecord",
-            .method = HTTP_GET,
-            .handler = start_record_handler,
-            .user_ctx = NULL};
-        httpd_register_uri_handler(server_httpd, &start_record_uri);
+  config.server_port += 1;
+  config.ctrl_port += 1;
 
-        httpd_uri_t stop_record_uri = {
-            .uri = "/stopRecord",
-            .method = HTTP_GET,
-            .handler = stop_record_handler,
-            .user_ctx = NULL};
-        httpd_register_uri_handler(server_httpd, &stop_record_uri);
-
-        httpd_uri_t relay_uri = {
-            .uri = "/relayOn",
-            .method = HTTP_GET,
-            .handler = relay_on_handler,
-            .user_ctx = NULL};
-        httpd_register_uri_handler(server_httpd, &relay_uri);
-    }
+  if (httpd_start(&stream_httpd, &config) == ESP_OK)
+  {
+    // Регистрируем обработчик стрима
+    httpd_register_uri_handler(stream_httpd, &stream_uri);
+  }
 }
 
 // =======================================================================
@@ -292,92 +307,92 @@ void startServer()
 // =======================================================================
 void setup()
 {
-    // Отключаем brownout (если требуется)
-    WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
-    Serial.begin(115200);
+  // Отключаем brownout (если требуется)
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+  Serial.begin(115200);
 
-    // Инициализируем пин реле
-    pinMode(relayPin, OUTPUT);
-    digitalWrite(relayPin, LOW);
+  // Инициализируем пин реле
+  pinMode(relayPin, OUTPUT);
+  digitalWrite(relayPin, LOW);
 
-    // ===== Инициализация камеры =====
-    camera_config_t cam_config;
-    cam_config.ledc_channel = LEDC_CHANNEL_0;
-    cam_config.ledc_timer = LEDC_TIMER_0;
-    cam_config.pin_d0 = Y2_GPIO_NUM;
-    cam_config.pin_d1 = Y3_GPIO_NUM;
-    cam_config.pin_d2 = Y4_GPIO_NUM;
-    cam_config.pin_d3 = Y5_GPIO_NUM;
-    cam_config.pin_d4 = Y6_GPIO_NUM;
-    cam_config.pin_d5 = Y7_GPIO_NUM;
-    cam_config.pin_d6 = Y8_GPIO_NUM;
-    cam_config.pin_d7 = Y9_GPIO_NUM;
-    cam_config.pin_xclk = XCLK_GPIO_NUM;
-    cam_config.pin_pclk = PCLK_GPIO_NUM;
-    cam_config.pin_vsync = VSYNC_GPIO_NUM;
-    cam_config.pin_href = HREF_GPIO_NUM;
-    cam_config.pin_sscb_sda = SIOD_GPIO_NUM;
-    cam_config.pin_sscb_scl = SIOC_GPIO_NUM;
-    cam_config.pin_pwdn = PWDN_GPIO_NUM;
-    cam_config.pin_reset = RESET_GPIO_NUM;
-    cam_config.xclk_freq_hz = 20000000;
-    cam_config.pixel_format = PIXFORMAT_JPEG;
+  // ===== Инициализация камеры =====
+  camera_config_t cam_config;
+  cam_config.ledc_channel = LEDC_CHANNEL_0;
+  cam_config.ledc_timer = LEDC_TIMER_0;
+  cam_config.pin_d0 = Y2_GPIO_NUM;
+  cam_config.pin_d1 = Y3_GPIO_NUM;
+  cam_config.pin_d2 = Y4_GPIO_NUM;
+  cam_config.pin_d3 = Y5_GPIO_NUM;
+  cam_config.pin_d4 = Y6_GPIO_NUM;
+  cam_config.pin_d5 = Y7_GPIO_NUM;
+  cam_config.pin_d6 = Y8_GPIO_NUM;
+  cam_config.pin_d7 = Y9_GPIO_NUM;
+  cam_config.pin_xclk = XCLK_GPIO_NUM;
+  cam_config.pin_pclk = PCLK_GPIO_NUM;
+  cam_config.pin_vsync = VSYNC_GPIO_NUM;
+  cam_config.pin_href = HREF_GPIO_NUM;
+  cam_config.pin_sscb_sda = SIOD_GPIO_NUM;
+  cam_config.pin_sscb_scl = SIOC_GPIO_NUM;
+  cam_config.pin_pwdn = PWDN_GPIO_NUM;
+  cam_config.pin_reset = RESET_GPIO_NUM;
+  cam_config.xclk_freq_hz = 20000000;
+  cam_config.pixel_format = PIXFORMAT_JPEG;
 
-    if (psramFound())
-    {
-        Serial.print("PSRAM найдено и используется\n");
-        cam_config.frame_size = FRAMESIZE_UXGA;
-        cam_config.jpeg_quality = 10;
-        cam_config.fb_count = 2;
-    }
-    else
-    {
-        Serial.print("PSRAM не найдено!\n");
-        cam_config.frame_size = FRAMESIZE_SVGA;
-        cam_config.jpeg_quality = 12;
-        cam_config.fb_count = 1;
-    }
+  if (psramFound())
+  {
+    Serial.print("PSRAM найдено и используется\n");
+    cam_config.frame_size = FRAMESIZE_UXGA;
+    cam_config.jpeg_quality = 10;
+    cam_config.fb_count = 2;
+  }
+  else
+  {
+    Serial.print("PSRAM не найдено!\n");
+    cam_config.frame_size = FRAMESIZE_SVGA;
+    cam_config.jpeg_quality = 12;
+    cam_config.fb_count = 1;
+  }
 
-    esp_err_t err = esp_camera_init(&cam_config);
-    if (err != ESP_OK)
-    {
-        Serial.printf("Camera init failed with error 0x%x", err);
-        return;
-    }
+  esp_err_t err = esp_camera_init(&cam_config);
+  if (err != ESP_OK)
+  {
+    Serial.printf("Camera init failed with error 0x%x", err);
+    return;
+  }
 
-    // ===== Подключение к WiFi =====
-    WiFi.begin(ssid, password);
-    Serial.print("Connecting to WiFi");
-    while (WiFi.status() != WL_CONNECTED)
-    {
-        delay(500);
-        Serial.print(".");
-    }
-    Serial.println("\nWiFi connected");
-    Serial.print("Access the stream at: http://");
-    Serial.println(WiFi.localIP());
+  // ===== Подключение к WiFi =====
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected");
+  Serial.print("Access the stream at: http://");
+  Serial.println(WiFi.localIP());
 
-    // ===== Инициализация SD-карты =====
-    if (!SD_MMC.begin())
-    {
-        Serial.println("SD Card Mount Failed");
-    }
-    else
-    {
-        Serial.println("SD Card mounted");
-    }
+  // ===== Инициализация SD-карты =====
+  if (!SD_MMC.begin())
+  {
+    Serial.println("SD Card Mount Failed");
+  }
+  else
+  {
+    Serial.println("SD Card mounted");
+  }
 
-    // Настраиваем получение времени по NTP
-    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo))
-    {
-        Serial.println("Не удалось получить время");
-        return;
-    }
+  // Настраиваем получение времени по NTP
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo))
+  {
+    Serial.println("Не удалось получить время");
+    return;
+  }
 
-    // ===== Запуск HTTP-сервера =====
-    startServer();
+  // ===== Запуск HTTP-сервера =====
+  startServer();
 }
 
 // =======================================================================
@@ -385,12 +400,12 @@ void setup()
 // =======================================================================
 void loop()
 {
-    // Неблокирующая проверка работы реле: если прошло 3 сек – отключаем реле
-    if (relayActive && (millis() - relayStartTime >= relayDuration))
-    {
-        digitalWrite(relayPin, LOW);
-        relayActive = false;
-        Serial.println("Relay deactivated");
-    }
-    delay(1);
+  // Неблокирующая проверка работы реле: если прошло 3 сек – отключаем реле
+  if (relayActive && (millis() - relayStartTime >= relayDuration))
+  {
+    digitalWrite(relayPin, LOW);
+    relayActive = false;
+    Serial.println("Relay deactivated");
+  }
+  delay(1);
 }
